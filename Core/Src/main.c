@@ -91,6 +91,12 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 		case 0x73:
 			RPM = RxData[0] * 256;
 			RPM += RxData[1];
+			/*RPM *= 60;//to per hour
+			RPM *= 2 * 3.141592653589 * 18.17;//to inches
+			RPM/=12;//to feet
+			RPM/=5280;//to miles*/
+
+			RPM *= 0.1081112472;//combined into one step
 
 	}
 	received = true;
