@@ -60,15 +60,25 @@ static void MX_CAN_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-bool received = false;
 CAN_RxHeaderTypeDef RxHeader;
 uint8_t RxData[8];
 uint32_t TxMailbox;
 CAN_TxHeaderTypeDef TxHeader;
 uint8_t TxData[8];
+int messages[2] = {0x33, 0x37};
+int motorMessage = false;
+int motorSend = 0;
+int PWM = 0;
+int motorTemp = 0;
+int contTemp = 0;
 int RPM = 0;
-int SOC = 0;
-int fails = 0;
+
+int SOC = 99;
+int highTherm = 99;
+int packC = 99;
+int ampHours = 99;
+int packVS = 99;
+int packVO = 99;
 
 void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 {
@@ -79,40 +89,44 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 			//failsafes = RxData[0];
 			//DTC1 = RxData[1];
 			//DTC2 = RxData[2];
-			//highTherm = RxData[3];
+			highTherm = RxData[3];
 			break;
 		case 0x115:
-			//packC = RxData[0];
-			//ampHours = RxData[1];
-			//packVS = RxData[2];
-			//packVO = RxData[3];
+			packC = RxData[0]/10;
+			ampHours = RxData[1]/10;
+			packVS = RxData[2]/100;
+			packVO = RxData[3]/10;
 			SOC = RxData[4]/2;
 			break;
 		case 0x73:
-			RPM = RxData[0] * 256;
-			RPM += RxData[1];
-			/*RPM *= 60;//to per hour
-			RPM *= 2 * 3.141592653589 * 18.17;//to inches
-			RPM/=12;//to feet
-			RPM/=5280;//to miles*/
+			switch (motorMessage)
+			{
+				case 0x33:
+					PWM = RxData[0];
+					motorTemp = RxData[2] + 80;
+					contTemp = RxData[3];
+					break;
+				case 0x37:
+					RPM = RxData[0] * 256;
+					RPM += RxData[1];
+					/*RPM *= 60;//to per hour
+					RPM *= 2 * 3.141592653589 * 18.17;//to inches
+					RPM/=12;//to feet
+					RPM/=5280;//to miles*/
 
-			RPM *= 0.1081112472;//combined into one step
+					RPM *= 0.1081112472;//combined into one step
+					break;
+
+			}
+			motorMessage = 0;
 
 	}
-	received = true;
 }
 
-void waitForMessage()
+void motorRead(int data)
 {
-	for(int i  = 0; !received && i < 40; i++)
-	{
-		HAL_Delay(25);
-	}
-}
-
-void getRPM()
-{
-	received = false;
+	for(int i = 0; i < 20 && motorMessage != 0; i++) HAL_Delay(25);
+	motorMessage = data;
 
 	TxHeader.DLC = 1;
 	TxData[0] = 0x37;
@@ -120,13 +134,6 @@ void getRPM()
 	TxHeader.StdId = 0x6B; // ID
 
 	HAL_CAN_AddTxMessage(&hcan, &TxHeader, TxData, &TxMailbox);
-	waitForMessage();
-
-	if(!received)
-	{
-		fails++;
-		RPM = fails;
-	}
 }
 
 
@@ -144,8 +151,10 @@ uint8_t segments[10] =
 		0b01100111
 };
 
-int Dpins[2] = {DIO1_Pin, DIO2_Pin};
-int Cpins[2] = {Clk1_Pin, Clk2_Pin};
+int Dpins[3] = {DIO1_Pin, DIO2_Pin, DIO3_Pin};
+int Cpins[3] = {Clk1_Pin, Clk2_Pin, Clk3_Pin};
+GPIO_TypeDef* DGroup[3] = {GPIOB, GPIOB, GPIOA};
+GPIO_TypeDef* CGroup[3] = {GPIOB, GPIOB, GPIOB};
 
 void delay_us (int time)
 {
@@ -160,12 +169,12 @@ void delay_us (int time)
 
 void data(int set, int pin)
 {
-	HAL_GPIO_WritePin(GPIOB, Dpins[pin], set);
+	HAL_GPIO_WritePin(DGroup[pin], Dpins[pin], set);
 }
 
 void clock(int set, int pin)
 {
-	HAL_GPIO_WritePin(GPIOB, Cpins[pin], set);
+	HAL_GPIO_WritePin(CGroup[pin], Cpins[pin], set);
 }
 
 void start (int pin)
@@ -246,7 +255,6 @@ void dispNumber(int index, int rIndex, int n, int pin, int size, int colon)
 
 	dispData(index, data, size, pin);
 }
-
 /* USER CODE END 0 */
 
 /**
@@ -257,7 +265,6 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -266,14 +273,12 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
-
   /* USER CODE END Init */
 
   /* Configure the system clock */
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
-
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
@@ -284,7 +289,6 @@ int main(void)
   HAL_CAN_Start(&hcan);
   HAL_CAN_ActivateNotification(&hcan, CAN_IT_RX_FIFO0_MSG_PENDING);
   HAL_Delay(30);
-
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -294,11 +298,16 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+	  motorRead(messages[motorSend]);
+	  motorSend++;
+	  motorSend %= 2;
 
-	  getRPM();
-
-	  dispNumber(3, 1, RPM, 0, 4, 0);
-	  dispNumber(3, 1, SOC%100, 1, 2, 0);
+	  dispNumber(3, 1, RPM, 0, 2, 1);
+	  dispNumber(0, 0, SOC, 0, 2, 1);
+	  dispNumber(3, 1, motorTemp%100, 1, 2, 1);
+	  dispNumber(0, 0, highTherm%100, 1, 2, 1);
+	  dispNumber(3, 1, ampHours, 2, 2, 0);
+	  dispNumber(0, 0, motorSend, 2, 2, 1);
   }
   /* USER CODE END 3 */
 }
@@ -440,19 +449,31 @@ static void MX_GPIO_Init(void)
   /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
-  __HAL_RCC_GPIOF_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, Clk2_Pin|DIO2_Pin|Clk1_Pin|DIO1_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, DIO1_Pin|Clk2_Pin|Clk3_Pin|DIO2_Pin
+                          |Clk1_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pins : Clk2_Pin DIO2_Pin Clk1_Pin DIO1_Pin */
-  GPIO_InitStruct.Pin = Clk2_Pin|DIO2_Pin|Clk1_Pin|DIO1_Pin;
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(DIO3_GPIO_Port, DIO3_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pins : DIO1_Pin Clk2_Pin Clk3_Pin DIO2_Pin
+                           Clk1_Pin */
+  GPIO_InitStruct.Pin = DIO1_Pin|Clk2_Pin|Clk3_Pin|DIO2_Pin
+                          |Clk1_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : DIO3_Pin */
+  GPIO_InitStruct.Pin = DIO3_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+  HAL_GPIO_Init(DIO3_GPIO_Port, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
